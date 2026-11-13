@@ -851,8 +851,10 @@ class JuceVST3EditController final : public Vst::EditController,
 {
 public:
     JuceVST3EditController (const VSTComSmartPtr<Vst::IHostApplication>& host,
-                            const RunLoop& l)
-        : scopedRunLoop (l)
+                            const RunLoop& l JUCE_MULTI_PLUGIN_ONLY (,
+                            const PluginDescriptor& d))
+        : scopedRunLoop (l) JUCE_MULTI_PLUGIN_ONLY (,
+          emulatesMidiCC (multi_plugin::wantsMidiInput (d)))
     {
         if (host != nullptr)
             host->queryInterface (FUnknown::iid, (void**) &hostContext);
@@ -1260,6 +1262,7 @@ public:
                                                     [[maybe_unused]] Vst::ParamID& resultID) override
     {
        #if JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS
+        JUCE_MULTI_PLUGIN_ONLY (if (! emulatesMidiCC) return kResultFalse;)
         resultID = midiControllerToParameter[channel][midiControllerNumber];
         return kResultTrue; // Returning false makes some hosts stop asking for further MIDI Controller Assignments
        #else
@@ -1289,7 +1292,7 @@ public:
 
     inline bool isMidiControllerParamID (Vst::ParamID paramID) const noexcept
     {
-        return (paramID >= parameterToMidiControllerOffset
+        return (JUCE_MULTI_PLUGIN_ONLY (emulatesMidiCC &&) paramID >= parameterToMidiControllerOffset
                     && isPositiveAndBelow (paramID - parameterToMidiControllerOffset,
                                            static_cast<Vst::ParamID> (numElementsInArray (parameterToMidiController))));
     }
@@ -1599,6 +1602,7 @@ private:
 
     //==============================================================================
     ScopedRunLoop scopedRunLoop;
+    JUCE_MULTI_PLUGIN_ONLY (const bool emulatesMidiCC;)
     VSTComSmartPtr<JuceAudioProcessor> audioProcessor;
 
     struct MidiController
@@ -1764,10 +1768,12 @@ private:
             }
 
            #if JUCE_VST3_EMULATE_MIDI_CC_WITH_PARAMETERS
+            JUCE_MULTI_PLUGIN_ONLY (if (emulatesMidiCC) {)
             parameterToMidiControllerOffset = static_cast<Vst::ParamID> (audioProcessor->isUsingManagedParameters() ? JuceAudioProcessor::paramMidiControllerOffset
                                                                                                                     : parameters.getParameterCount());
 
             initialiseMidiControllerMappings();
+            JUCE_MULTI_PLUGIN_ONLY (})
            #endif
 
             audioProcessorChanged (pluginInstance, ChangeDetails().withParameterInfoChanged (true));
@@ -2669,9 +2675,11 @@ class JuceVST3Component final : public Vst::IComponent,
 {
 public:
     JuceVST3Component (const VSTComSmartPtr<Vst::IHostApplication>& h,
-                       const RunLoop& l)
+                       const RunLoop& l JUCE_MULTI_PLUGIN_ONLY (,
+                       const PluginDescriptor& d))
         : scopedRunLoop (l),
-          pluginInstance (createPluginFilterOfType (AudioProcessor::wrapperType_VST3).release()),
+          JUCE_MULTI_PLUGIN_ONLY (multiPlugin (d),)
+          pluginInstance (createPluginFilterOfType (AudioProcessor::wrapperType_VST3 JUCE_MULTI_PLUGIN_ONLY (, d)).release()),
           host (h)
     {
         inParameterChangedCallback = false;
@@ -2796,7 +2804,10 @@ public:
 
     tresult PLUGIN_API getControllerClassId (TUID classID) override
     {
-        memcpy (classID, JuceVST3EditController::iid, sizeof (TUID));
+        memcpy (classID,
+                JUCE_MULTI_PLUGIN_SELECT (toSteinbergUID (getVST3InterfaceId (multiPlugin, VST3Interface::Type::controller)).toTUID(),
+                                          JuceVST3EditController::iid),
+                sizeof (TUID));
         return kResultTrue;
     }
 
@@ -3193,12 +3204,12 @@ public:
         if (type == Vst::kEvent)
         {
            #if JucePlugin_WantsMidiInput
-            if (dir == Vst::kInput)
+            if (dir == Vst::kInput JUCE_MULTI_PLUGIN_ONLY (&& wantsMidiInput()))
                 return 1;
            #endif
 
            #if JucePlugin_ProducesMidiOutput
-            if (dir == Vst::kOutput)
+            if (dir == Vst::kOutput JUCE_MULTI_PLUGIN_ONLY (&& producesMidiOutput()))
                 return 1;
            #endif
         }
@@ -3241,7 +3252,9 @@ public:
                         return Vst::kAux;
                     }
 
-                   #if JucePlugin_IsSynth
+                   #if JUCE_MULTI_PLUGIN
+                    return multiPlugin.isSynth || isFirstBus ? Vst::kMain : Vst::kAux;
+                   #elif JucePlugin_IsSynth
                     return Vst::kMain;
                    #else
                     return isFirstBus ? Vst::kMain : Vst::kAux;
@@ -3263,7 +3276,7 @@ public:
             info.flags = Vst::BusInfo::kDefaultActive;
 
            #if JucePlugin_WantsMidiInput
-            if (dir == Vst::kInput && index == 0)
+            if (dir == Vst::kInput && index == 0 JUCE_MULTI_PLUGIN_ONLY (&& wantsMidiInput()))
             {
                 info.mediaType = Vst::kEvent;
                 info.direction = dir;
@@ -3281,7 +3294,7 @@ public:
            #endif
 
            #if JucePlugin_ProducesMidiOutput
-            if (dir == Vst::kOutput && index == 0)
+            if (dir == Vst::kOutput && index == 0 JUCE_MULTI_PLUGIN_ONLY (&& producesMidiOutput()))
             {
                 info.mediaType = Vst::kEvent;
                 info.direction = dir;
@@ -3316,7 +3329,7 @@ public:
         if (type == Vst::kEvent)
         {
            #if JucePlugin_WantsMidiInput
-            if (index == 0 && dir == Vst::kInput)
+            if (index == 0 && dir == Vst::kInput JUCE_MULTI_PLUGIN_ONLY (&& wantsMidiInput()))
             {
                 isMidiInputBusEnabled = (state != 0);
                 return kResultTrue;
@@ -3324,7 +3337,7 @@ public:
            #endif
 
            #if JucePlugin_ProducesMidiOutput
-            if (index == 0 && dir == Vst::kOutput)
+            if (index == 0 && dir == Vst::kOutput JUCE_MULTI_PLUGIN_ONLY (&& producesMidiOutput()))
             {
                 isMidiOutputBusEnabled = (state != 0);
                 return kResultTrue;
@@ -3711,7 +3724,7 @@ public:
             processParameterChanges (*data.inputParameterChanges);
 
        #if JucePlugin_WantsMidiInput
-        if (isMidiInputBusEnabled && data.inputEvents != nullptr)
+        if (JUCE_MULTI_PLUGIN_ONLY (wantsMidiInput() &&) isMidiInputBusEnabled && data.inputEvents != nullptr)
             MidiEventList::toMidiBuffer (midiBuffer, *data.inputEvents);
        #endif
 
@@ -3748,7 +3761,7 @@ public:
         }
 
        #if JucePlugin_ProducesMidiOutput
-        if (isMidiOutputBusEnabled && data.outputEvents != nullptr)
+        if (JUCE_MULTI_PLUGIN_ONLY (producesMidiOutput() &&) isMidiOutputBusEnabled && data.outputEvents != nullptr)
             MidiEventList::pluginToHostEventList (*data.outputEvents, midiBuffer);
        #endif
 
@@ -3929,6 +3942,11 @@ private:
     //==============================================================================
     ScopedRunLoop scopedRunLoop;
     std::atomic<int> refCount { 1 };
+   #if JUCE_MULTI_PLUGIN
+    const PluginDescriptor& multiPlugin;
+    bool wantsMidiInput() const noexcept     { return multi_plugin::wantsMidiInput (multiPlugin); }
+    bool producesMidiOutput() const noexcept { return multi_plugin::producesMidiOutput (multiPlugin); }
+   #endif
     AudioProcessor* pluginInstance = nullptr;
 
    #if JUCE_LINUX || JUCE_BSD
@@ -4131,11 +4149,24 @@ public:
 private:
     FUnknown* createInstance (const ClassEntry& entry) final
     {
+       #if JUCE_MULTI_PLUGIN
+        for (size_t i = 0; i < multi_plugin::size; ++i)
+        {
+            const auto& d = multi_plugin::at (i);
+
+            if (doUIDsMatch (entry.info2.cid, toSteinbergUID (getVST3InterfaceId (d, VST3Interface::Type::component)).toTUID()))
+                return static_cast<Vst::IAudioProcessor*> (new JuceVST3Component (host, runLoop, d));
+
+            if (doUIDsMatch (entry.info2.cid, toSteinbergUID (getVST3InterfaceId (d, VST3Interface::Type::controller)).toTUID()))
+                return static_cast<Vst::IEditController*> (new JuceVST3EditController (host, runLoop, d));
+        }
+       #else
         if (doUIDsMatch (entry.info2.cid, JuceVST3Component::iid))
             return static_cast<Vst::IAudioProcessor*> (new JuceVST3Component (host, runLoop));
 
         if (doUIDsMatch (entry.info2.cid, JuceVST3EditController::iid))
             return static_cast<Vst::IEditController*> (new JuceVST3EditController (host, runLoop));
+       #endif
 
        #if JucePlugin_Enable_ARA
         if (doUIDsMatch (entry.info2.cid, JuceARAFactory::iid))

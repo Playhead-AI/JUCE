@@ -34,6 +34,8 @@
 
 #pragma once
 
+#include <juce_audio_plugin_client/juce_MultiPlugin.h>
+
 namespace juce
 {
 
@@ -53,5 +55,21 @@ inline std::unique_ptr<AudioProcessor> createPluginFilterOfType (AudioProcessor:
 
     return pluginInstance;
 }
+
+#if JUCE_MULTI_PLUGIN
+inline std::unique_ptr<AudioProcessor> createPluginFilterOfType (AudioProcessor::WrapperType type,
+                                                                 const PluginDescriptor& descriptor)
+{
+    PluginHostType::jucePlugInClientCurrentWrapperType = type;
+    AudioProcessor::setTypeOfNextNewPlugin (type);
+    auto pluginInstance = rawToUniquePtr (::createMultiPluginFilter (descriptor));
+    AudioProcessor::setTypeOfNextNewPlugin (AudioProcessor::wrapperType_Undefined);
+
+    // your createMultiPluginFilter() must return an object for every row of the table!
+    jassert (pluginInstance != nullptr && pluginInstance->wrapperType == type);
+
+    return pluginInstance;
+}
+#endif
 
 } // namespace juce

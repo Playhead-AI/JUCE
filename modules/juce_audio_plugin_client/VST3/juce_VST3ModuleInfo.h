@@ -34,6 +34,8 @@
 
 #pragma once
 
+#include <juce_audio_plugin_client/juce_MultiPlugin.h>
+
 #ifndef DOXYGEN
 
 namespace juce
@@ -60,6 +62,14 @@ namespace juce
 
     return VST3Interface::jucePluginId (JucePlugin_ManufacturerCode, JucePlugin_PluginCode, interfaceType);
 }
+
+#if JUCE_MULTI_PLUGIN
+[[maybe_unused]] static VST3Interface::Id getVST3InterfaceId (const PluginDescriptor& d,
+                                                              VST3Interface::Type interfaceType)
+{
+    return VST3Interface::jucePluginId (JucePlugin_ManufacturerCode, d.pluginCode, interfaceType);
+}
+#endif
 
 [[maybe_unused]] static std::vector<VST3Interface::Id> getAllVST3CompatibleClasses()
 {
@@ -296,6 +306,22 @@ protected:
             infoW.fromAscii (info2);
         }
 
+       #if JUCE_MULTI_PLUGIN
+        ClassEntry (const PluginDescriptor& d, VST3Interface::Type interfaceType, const char* name) noexcept
+            : info2 ((const char*) getVST3InterfaceId (d, interfaceType).data(),
+                     Steinberg::PClassInfo::kManyInstances,
+                     name,
+                     d.name,
+                     d.isSynth ? Steinberg::Vst::kSimpleModeSupported : 0,
+                     d.vst3Category,
+                     JucePlugin_Manufacturer,
+                     JucePlugin_VersionString,
+                     kVstVersionString)
+        {
+            infoW.fromAscii (info2);
+        }
+       #endif
+
         Steinberg::PClassInfo2 info2;
         Steinberg::PClassInfoW infoW;
 
@@ -312,8 +338,27 @@ protected:
         const ClassEntry* end() const { return data + size; }
     };
 
+   #if JUCE_MULTI_PLUGIN
+    // A component class and a controller class for each row, in table order.
+    template <size_t... indices>
+    static ClassEntrySpan getMultiPluginClassEntries (std::index_sequence<indices...>)
+    {
+        static const ClassEntry classEntries[]
+        {
+            { multi_plugin::at (indices / 2),
+              indices % 2 == 0 ? VST3Interface::Type::component : VST3Interface::Type::controller,
+              indices % 2 == 0 ? kVstAudioEffectClass : kVstComponentControllerClass }...
+        };
+
+        return { classEntries, std::size (classEntries) };
+    }
+   #endif
+
     static ClassEntrySpan getClassEntries()
     {
+       #if JUCE_MULTI_PLUGIN
+        return getMultiPluginClassEntries (std::make_index_sequence<multi_plugin::size * 2>{});
+       #else
         static const ClassEntry classEntries[]
         {
            #ifdef JUCE_VST3_COMPATIBLE_CLASSES
@@ -327,6 +372,7 @@ protected:
         };
 
         return { classEntries, std::size (classEntries) };
+       #endif
     }
 
     virtual Steinberg::FUnknown* createInstance (const ClassEntry& entry)

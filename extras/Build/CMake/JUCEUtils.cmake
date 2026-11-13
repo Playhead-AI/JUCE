@@ -1179,6 +1179,31 @@ endfunction()
 
 # ==================================================================================================
 
+# JUCE writes one AudioComponents entry, for the plug-in juce_add_plugin describes. A
+# multi-plug-in AU bundle needs one per row of its table, so a helper built from the table
+# adds the rest to the bundle's Info.plist after each build.
+function(_juce_add_au_multi_plugin_plist_step shared_code_target target_name)
+    set(helper_target ${shared_code_target}_au_plist_helper)
+
+    if(NOT TARGET ${helper_target})
+        get_target_property(module_path juce::juce_audio_processors INTERFACE_JUCE_MODULE_PATH)
+        add_executable(${helper_target}
+            "${module_path}/juce_audio_plugin_client/AU/juce_AUMultiPluginPlistHelper.mm")
+        target_include_directories(${helper_target} PRIVATE "${module_path}")
+        target_compile_definitions(${helper_target} PRIVATE
+            $<TARGET_GENEX_EVAL:${shared_code_target},$<TARGET_PROPERTY:${shared_code_target},COMPILE_DEFINITIONS>>)
+        target_include_directories(${helper_target} PRIVATE
+            $<TARGET_GENEX_EVAL:${shared_code_target},$<TARGET_PROPERTY:${shared_code_target},INCLUDE_DIRECTORIES>>)
+        target_compile_features(${helper_target} PRIVATE cxx_std_17)
+        _juce_link_frameworks(${helper_target} PRIVATE Foundation)
+    endif()
+
+    add_dependencies(${target_name} ${helper_target})
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${helper_target} "$<TARGET_BUNDLE_CONTENT_DIR:${target_name}>/Info.plist"
+        VERBATIM)
+endfunction()
+
 function(_juce_set_plugin_target_properties shared_code_target kind)
     set(target_name ${shared_code_target}_${kind})
 
@@ -1272,6 +1297,12 @@ function(_juce_set_plugin_target_properties shared_code_target kind)
 
         set(output_path "$<TARGET_BUNDLE_DIR:${target_name}>")
         _juce_set_copy_properties(${shared_code_target} ${target_name} "${output_path}" JUCE_AU_COPY_DIR)
+
+        get_target_property(multi_plugin_table ${shared_code_target} JUCE_MULTI_PLUGIN_TABLE)
+
+        if(multi_plugin_table)
+            _juce_add_au_multi_plugin_plist_step(${shared_code_target} ${target_name})
+        endif()
     elseif(kind STREQUAL "AUv3")
         set_target_properties(${target_name} PROPERTIES
             XCODE_PRODUCT_TYPE "com.apple.product-type.app-extension"
@@ -1587,6 +1618,24 @@ function(_juce_configure_plugin_targets target)
         JucePlugin_ARACompatibleArchiveIDs=$<TARGET_PROPERTY:${target},JUCE_ARA_COMPATIBLE_ARCHIVE_IDS>
         JucePlugin_ARAContentTypes=$<TARGET_PROPERTY:${target},JUCE_ARA_ANALYSIS_TYPES>
         JucePlugin_ARATransformationFlags=$<TARGET_PROPERTY:${target},JUCE_ARA_TRANSFORMATION_FLAGS>)
+
+    # MULTI_PLUGIN_TABLE names the header holding the table of plug-ins this bundle registers;
+    # see juce_audio_plugin_client/juce_MultiPlugin.h.
+    get_target_property(multi_plugin_table ${target} JUCE_MULTI_PLUGIN_TABLE)
+
+    if(multi_plugin_table)
+        get_filename_component(multi_plugin_table "${multi_plugin_table}" ABSOLUTE
+            BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+
+        if(NOT EXISTS "${multi_plugin_table}")
+            message(FATAL_ERROR "MULTI_PLUGIN_TABLE ${multi_plugin_table} does not exist")
+        endif()
+
+        set_target_properties(${target} PROPERTIES JUCE_MULTI_PLUGIN_TABLE "${multi_plugin_table}")
+        target_compile_definitions(${target} PUBLIC
+            JUCE_MULTI_PLUGIN=1
+            "JUCE_MULTI_PLUGIN_TABLE_HEADER=\"${multi_plugin_table}\"")
+    endif()
 
     set_target_properties(${target} PROPERTIES
         POSITION_INDEPENDENT_CODE TRUE
@@ -2045,7 +2094,8 @@ function(_juce_initialise_target target)
         AAX_COPY_DIR
         AU_COPY_DIR
         UNITY_COPY_DIR
-        COPY_PLUGIN_AFTER_BUILD)
+        COPY_PLUGIN_AFTER_BUILD
+        MULTI_PLUGIN_TABLE)
 
     set(multi_value_args
         FORMATS

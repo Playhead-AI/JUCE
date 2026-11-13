@@ -114,17 +114,34 @@ static const AudioUnitPropertyID juceFilterObjectPropertyID = 0x1a45ffe9;
 
 template <> struct ContainerDeletePolicy<const __CFString>   { static void destroy (const __CFString* o) { if (o != nullptr) CFRelease (o); } };
 
+#if JUCE_MULTI_PLUGIN
+// The component's subtype is the plug-in code of the row it was registered for.
+static const PluginDescriptor& multiPluginForComponent (AudioUnit component)
+{
+    AudioComponentDescription description{};
+    AudioComponentGetDescription (AudioComponentInstanceGetComponent (component), &description);
+
+    if (const auto* d = multi_plugin::find (description.componentSubType))
+        return *d;
+
+    jassertfalse;
+    return multi_plugin::at (0);
+}
+#endif
+
 // make sure the audio processor is initialized before the AUBase class
 struct AudioProcessorHolder
 {
-    AudioProcessorHolder()
+    JUCE_MULTI_PLUGIN_ONLY (explicit) AudioProcessorHolder (JUCE_MULTI_PLUGIN_ONLY (AudioUnit component))
+        JUCE_MULTI_PLUGIN_ONLY (: multiPlugin (multiPluginForComponent (component)))
     {
         // audio units do not have a notion of enabled or un-enabled buses
         juceFilter->enableAllBuses();
     }
 
     ScopedJuceInitialiser_GUI scopedInitialiser;
-    std::unique_ptr<AudioProcessor> juceFilter { createPluginFilterOfType (AudioProcessor::wrapperType_AudioUnit) };
+    JUCE_MULTI_PLUGIN_ONLY (const PluginDescriptor& multiPlugin;)
+    std::unique_ptr<AudioProcessor> juceFilter { createPluginFilterOfType (AudioProcessor::wrapperType_AudioUnit JUCE_MULTI_PLUGIN_ONLY (, multiPlugin)) };
 };
 
 //==============================================================================
@@ -149,7 +166,8 @@ class JuceAU final : public AudioProcessorHolder,
 
 public:
     explicit JuceAU (AudioUnit component)
-        : MusicDeviceBase (component,
+        : JUCE_MULTI_PLUGIN_ONLY (AudioProcessorHolder (component),)
+          MusicDeviceBase (component,
                            (UInt32) AudioUnitHelpers::getBusCountForWrapper (*juceFilter, true),
                            (UInt32) AudioUnitHelpers::getBusCountForWrapper (*juceFilter, false))
     {
@@ -298,8 +316,8 @@ public:
 
         const auto isInput = *optIsInput;
 
-       #if JucePlugin_IsSynth
-        if (isInput)
+       #if JucePlugin_IsSynth || JUCE_MULTI_PLUGIN
+        if (JUCE_MULTI_PLUGIN_ONLY (multiPlugin.isSynth &&) isInput)
             return false;
        #endif
 
@@ -454,7 +472,7 @@ public:
                #endif
 
                 case kAudioUnitProperty_MIDIOutputCallbackInfo:
-                    if constexpr (pluginProducesMidiOutput)
+                    if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
                     {
                         outDataSize = sizeof (CFArrayRef);
                         outWritable = false;
@@ -463,7 +481,7 @@ public:
                     break;
 
                 case kAudioUnitProperty_MIDIOutputCallback:
-                    if constexpr (pluginProducesMidiOutput)
+                    if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
                     {
                         outDataSize = sizeof (AUMIDIOutputCallbackStruct);
                         outWritable = true;
@@ -473,7 +491,7 @@ public:
 
                #if JUCE_APPLE_MIDI_EVENT_LIST_SUPPORTED
                 case kAudioUnitProperty_MIDIOutputEventListCallback:
-                    if constexpr (pluginProducesMidiOutput)
+                    if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
                     {
                         outDataSize = sizeof (AUMIDIEventListBlock);
                         outWritable = true;
@@ -649,7 +667,7 @@ public:
                #endif
 
                 case kAudioUnitProperty_MIDIOutputCallbackInfo:
-                    if constexpr (pluginProducesMidiOutput)
+                    if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
                     {
                         CFStringRef strs[1];
                         strs[0] = CFSTR ("MIDI Callback");
@@ -727,7 +745,7 @@ public:
             switch (inID)
             {
                 case kAudioUnitProperty_MIDIOutputCallback:
-                    if constexpr (pluginProducesMidiOutput)
+                    if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
                     {
                         if (inDataSize < sizeof (AUMIDIOutputCallbackStruct))
                             return kAudioUnitErr_InvalidPropertyValue;
@@ -741,7 +759,7 @@ public:
 
                #if JUCE_APPLE_MIDI_EVENT_LIST_SUPPORTED
                 case kAudioUnitProperty_MIDIOutputEventListCallback:
-                    if constexpr (pluginProducesMidiOutput)
+                    if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
                     {
                         if (inDataSize != sizeof (AUMIDIEventListBlock))
                             return kAudioUnitErr_InvalidPropertyValue;
@@ -1539,7 +1557,7 @@ public:
         }
 
         // process midi output
-        if constexpr (pluginProducesMidiOutput)
+        if constexpr (pluginProducesMidiOutput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::producesMidiOutput (multiPlugin)))
             pushMidiOutput (nFrames);
 
         midiEvents.clear();
@@ -1558,7 +1576,7 @@ public:
                               [[maybe_unused]] UInt8 inData2,
                               [[maybe_unused]] UInt32 inStartFrame) override
     {
-        if constexpr (pluginWantsMidiInput)
+        if constexpr (pluginWantsMidiInput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::wantsMidiInput (multiPlugin)))
         {
             const juce::uint8 data[] = { (juce::uint8) (inStatus | inChannel),
                                          (juce::uint8) inData1,
@@ -1574,7 +1592,7 @@ public:
 
     OSStatus HandleSysEx ([[maybe_unused]] const UInt8* inData, [[maybe_unused]] UInt32 inLength) override
     {
-        if constexpr (pluginWantsMidiInput)
+        if constexpr (pluginWantsMidiInput) JUCE_MULTI_PLUGIN_ONLY (if (multi_plugin::wantsMidiInput (multiPlugin)))
         {
             const ScopedLock sl (incomingMidiLock);
             incomingEvents.addEvent (inData, (int) inLength, 0);
@@ -1587,6 +1605,7 @@ public:
    #if JUCE_APPLE_MIDI_EVENT_LIST_SUPPORTED
     OSStatus MIDIEventList (UInt32 inOffsetSampleFrame, const struct MIDIEventList* list) override
     {
+        JUCE_MULTI_PLUGIN_ONLY (if (! multi_plugin::wantsMidiInput (multiPlugin)) return kAudioUnitErr_PropertyNotInUse;)
         const ScopedLock sl (incomingMidiLock);
 
         auto* packet = &list->packet[0];
@@ -2620,6 +2639,13 @@ private:
              extern "C" void* JuceAUFactory (const AudioComponentDescription* inDesc);
 AUSDK_EXPORT extern "C" void* JuceAUFactory (const AudioComponentDescription* inDesc)
 {
+   #if JUCE_MULTI_PLUGIN
+    // A row without MIDI gets the plain factory, so hosts never see it claim MIDI.
+    if (const auto* d = inDesc != nullptr ? multi_plugin::find (inDesc->componentSubType) : nullptr)
+        if (! multi_plugin::wantsMidiInput (*d) && ! multi_plugin::producesMidiOutput (*d))
+            return ausdk::AUBaseFactory<JuceAU>::Factory (inDesc);
+   #endif
+
     if constexpr (pluginWantsMidiInput || pluginProducesMidiOutput)
         return ausdk::AUMusicDeviceFactory<JuceAU>::Factory (inDesc);
     else
