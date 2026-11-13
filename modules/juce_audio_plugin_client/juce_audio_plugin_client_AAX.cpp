@@ -781,8 +781,9 @@ namespace AAXClasses
                                     private AsyncUpdater
     {
     public:
-        JuceAAX_Processor()
-            : pluginInstance (createPluginFilterOfType (AudioProcessor::wrapperType_AAX))
+        JUCE_MULTI_PLUGIN_ONLY (explicit) JuceAAX_Processor (JUCE_MULTI_PLUGIN_ONLY (const PluginDescriptor& d))
+            : JUCE_MULTI_PLUGIN_ONLY (multiPlugin (d),)
+              pluginInstance (createPluginFilterOfType (AudioProcessor::wrapperType_AAX JUCE_MULTI_PLUGIN_ONLY (, d)))
         {
             inParameterChangedCallback = false;
 
@@ -800,6 +801,7 @@ namespace AAXClasses
             activeProcessors.removeAllInstancesOf (this);
         }
 
+        JUCE_MULTI_PLUGIN_ONLY (template <size_t index>)
         static AAX_CEffectParameters* AAX_CALLBACK Create()
         {
             if (PluginHostType::jucePlugInIsRunningInAudioSuiteFn == nullptr)
@@ -814,7 +816,7 @@ namespace AAXClasses
                 };
             }
 
-            return new JuceAAX_Processor();
+            return new JuceAAX_Processor (JUCE_MULTI_PLUGIN_ONLY (multi_plugin::at (index)));
         }
 
         AAX_Result Uninitialize() override
@@ -1812,8 +1814,8 @@ namespace AAXClasses
             AAX_EStemFormat outputStemFormat = AAX_eStemFormat_None;
             check (Controller()->GetOutputStemFormat (&outputStemFormat));
 
-            #if JucePlugin_IsSynth
-             if (inputBuses == 0)
+            #if JucePlugin_IsSynth || JUCE_MULTI_PLUGIN
+             if (JUCE_MULTI_PLUGIN_ONLY (multiPlugin.isSynth &&) inputBuses == 0)
                  inputStemFormat = AAX_eStemFormat_None;
             #endif
 
@@ -2227,6 +2229,7 @@ namespace AAXClasses
         //==============================================================================
         ScopedJuceInitialiser_GUI libraryInitialiser;
 
+        JUCE_MULTI_PLUGIN_ONLY (const PluginDescriptor& multiPlugin;)
         std::unique_ptr<AudioProcessor> pluginInstance;
 
         static constexpr auto maxSamplesPerBlock = 1 << AAX_eAudioBufferLength_Max;
@@ -2404,13 +2407,14 @@ namespace AAXClasses
                                   const AudioProcessor::BusesLayout& fullLayout,
                                   AudioProcessor& processor,
                                   Array<int32>& pluginIds,
-                                  const int numMeters)
+                                  const int numMeters JUCE_MULTI_PLUGIN_ONLY (,
+                                  const PluginDescriptor& d))
     {
         [[maybe_unused]] auto aaxInputFormat  = getFormatForAudioChannelSet (fullLayout.getMainInputChannelSet(),  false);
         [[maybe_unused]] auto aaxOutputFormat = getFormatForAudioChannelSet (fullLayout.getMainOutputChannelSet(), false);
 
-       #if JucePlugin_IsSynth
-        if (aaxInputFormat == AAX_eStemFormat_None)
+       #if JucePlugin_IsSynth || JUCE_MULTI_PLUGIN
+        if (JUCE_MULTI_PLUGIN_ONLY (d.isSynth &&) aaxInputFormat == AAX_eStemFormat_None)
             aaxInputFormat = aaxOutputFormat;
        #endif
 
@@ -2422,11 +2426,11 @@ namespace AAXClasses
 
         if (supportsMidiInput (processor))
             check (desc.AddMIDINode (JUCEAlgorithmIDs::midiNodeIn, AAX_eMIDINodeType_LocalInput,
-                                     JucePlugin_Name, 0xffff));
+                                     JUCE_MULTI_PLUGIN_SELECT (d.name, JucePlugin_Name), 0xffff));
 
         if (supportsMidiOutput (processor))
             check (desc.AddMIDINode (JUCEAlgorithmIDs::midiNodeOut, AAX_eMIDINodeType_LocalOutput,
-                                     JucePlugin_Name " Out", 0xffff));
+                                     JUCE_MULTI_PLUGIN_SELECT ((String (d.name) + " Out").toRawUTF8(), JucePlugin_Name " Out"), 0xffff));
 
         check (desc.AddPrivateData (JUCEAlgorithmIDs::pluginInstance, sizeof (PluginInstanceInfo)));
         check (desc.AddPrivateData (JUCEAlgorithmIDs::preparedFlag, sizeof (int32_t)));
@@ -2452,7 +2456,7 @@ namespace AAXClasses
         jassert (properties != nullptr);
 
         properties->AddProperty (AAX_eProperty_ManufacturerID,      JucePlugin_AAXManufacturerCode);
-        properties->AddProperty (AAX_eProperty_ProductID,           JucePlugin_AAXProductId);
+        properties->AddProperty (AAX_eProperty_ProductID,           JUCE_MULTI_PLUGIN_SELECT ((int32) d.pluginCode, JucePlugin_AAXProductId));
 
        #if JucePlugin_AAXDisableBypass
         properties->AddProperty (AAX_eProperty_CanBypass,           false);
@@ -2546,22 +2550,40 @@ namespace AAXClasses
         check (desc.AddProcessProc_Native (algorithmProcessCallback, properties));
     }
 
-    static void getPlugInDescription (AAX_IEffectDescriptor& descriptor, [[maybe_unused]] const AAX_IFeatureInfo* featureInfo)
+   #if JUCE_MULTI_PLUGIN
+    using CreateFunction = AAX_CEffectParameters* (AAX_CALLBACK*)();
+
+    template <size_t... indices>
+    static CreateFunction createFunctionFor (size_t index, std::index_sequence<indices...>)
     {
-        auto plugin = createPluginFilterOfType (AudioProcessor::wrapperType_AAX);
+        static constexpr CreateFunction functions[] { &JuceAAX_Processor::Create<indices>... };
+        return functions[index];
+    }
+
+    static CreateFunction createFunctionFor (size_t index)
+    {
+        return createFunctionFor (index, std::make_index_sequence<multi_plugin::size>{});
+    }
+   #endif
+
+    static void getPlugInDescription (AAX_IEffectDescriptor& descriptor, [[maybe_unused]] const AAX_IFeatureInfo* featureInfo
+                                      JUCE_MULTI_PLUGIN_ONLY (, size_t index))
+    {
+        JUCE_MULTI_PLUGIN_ONLY (const auto& d = multi_plugin::at (index);)
+        auto plugin = createPluginFilterOfType (AudioProcessor::wrapperType_AAX JUCE_MULTI_PLUGIN_ONLY (, d));
         [[maybe_unused]] auto numInputBuses  = plugin->getBusCount (true);
         [[maybe_unused]] auto numOutputBuses = plugin->getBusCount (false);
 
         auto pluginNames = plugin->getAlternateDisplayNames();
 
-        pluginNames.insert (0, JucePlugin_Name);
+        pluginNames.insert (0, JUCE_MULTI_PLUGIN_SELECT (d.name, JucePlugin_Name));
 
         pluginNames.removeDuplicates (false);
 
         for (auto name : pluginNames)
             descriptor.AddName (name.toRawUTF8());
 
-        descriptor.AddCategory (JucePlugin_AAXCategory);
+        descriptor.AddCategory (JUCE_MULTI_PLUGIN_SELECT (d.aaxCategory, JucePlugin_AAXCategory));
 
         const int numMeters = addAAXMeters (*plugin, descriptor);
 
@@ -2574,7 +2596,7 @@ namespace AAXClasses
             descriptor.AddResourceInfo (AAX_eResourceType_PageTable, filename.toRawUTF8());
 
         check (descriptor.AddProcPtr ((void*) JuceAAX_GUI::Create,        kAAX_ProcPtrID_Create_EffectGUI));
-        check (descriptor.AddProcPtr ((void*) JuceAAX_Processor::Create,  kAAX_ProcPtrID_Create_EffectParameters));
+        check (descriptor.AddProcPtr ((void*) JUCE_MULTI_PLUGIN_SELECT (createFunctionFor (index), JuceAAX_Processor::Create),  kAAX_ProcPtrID_Create_EffectParameters));
 
         Array<int32> pluginIds;
 
@@ -2590,7 +2612,7 @@ namespace AAXClasses
 
                 if (auto* desc = descriptor.NewComponentDescriptor())
                 {
-                    createDescriptor (*desc, layout, *plugin, pluginIds, numMeters);
+                    createDescriptor (*desc, layout, *plugin, pluginIds, numMeters JUCE_MULTI_PLUGIN_ONLY (, d));
                     check (descriptor.AddComponent (desc));
                 }
             }
@@ -2617,7 +2639,7 @@ namespace AAXClasses
 
                     if (auto* desc = descriptor.NewComponentDescriptor())
                     {
-                        createDescriptor (*desc, fullLayout, *plugin, pluginIds, numMeters);
+                        createDescriptor (*desc, fullLayout, *plugin, pluginIds, numMeters JUCE_MULTI_PLUGIN_ONLY (, d));
                         check (descriptor.AddComponent (desc));
                     }
                 }
@@ -2645,6 +2667,25 @@ AAX_Result JUCE_CDECL GetEffectDescriptions (AAX_ICollection* collection)
     if (const auto* hostDescription = collection->DescriptionHost())
         stemFormatFeatureInfo.reset (hostDescription->AcquireFeatureProperties (AAXATTR_ClientFeature_StemFormat));
 
+   #if JUCE_MULTI_PLUGIN
+    for (size_t i = 0; i < multi_plugin::size; ++i)
+    {
+        auto* descriptor = collection->NewDescriptor();
+
+        if (descriptor == nullptr)
+            return AAX_ERROR_NULL_OBJECT;
+
+        AAXClasses::getPlugInDescription (*descriptor, stemFormatFeatureInfo.get(), i);
+        collection->AddEffect (multi_plugin::at (i).aaxIdentifier, descriptor);
+    }
+
+    collection->SetManufacturerName (JucePlugin_Manufacturer);
+    collection->AddPackageName (JucePlugin_Desc);
+    collection->AddPackageName (JucePlugin_Name);
+    collection->SetPackageVersion (JucePlugin_VersionCode);
+
+    return AAX_SUCCESS;
+   #else
     if (auto* descriptor = collection->NewDescriptor())
     {
         AAXClasses::getPlugInDescription (*descriptor, stemFormatFeatureInfo.get());
@@ -2659,6 +2700,7 @@ AAX_Result JUCE_CDECL GetEffectDescriptions (AAX_ICollection* collection)
     }
 
     return AAX_ERROR_NULL_OBJECT;
+   #endif
 }
 
 JUCE_END_IGNORE_WARNINGS_GCC_LIKE
